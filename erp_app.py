@@ -19,12 +19,14 @@ PORT = 5050
 # POOL DE CONEXIONES
 # ──────────────────────────────────────────────
 
+import os
+
 DB_CONFIG = {
-    "host":        "ballast.proxy.rlwy.net",
-    "port":        52354,
-    "user":        "root",
-    "password":    "idJOASRTJSKhKqWSFyGlmXNmrshXrsnn",
-    "database":    "railway",
+    "host":        os.environ.get("DB_HOST", "ballast.proxy.rlwy.net"),
+    "port":        int(os.environ.get("DB_PORT", 52354)),
+    "user":        os.environ.get("DB_USER", "root"),
+    "password":    os.environ.get("DB_PASSWORD", "idJOASRTJSKhKqWSFyGlmXNmrshXrsnn"),
+    "database":    os.environ.get("DB_NAME", "railway"),
     "charset":     "utf8mb4",
     "cursorclass": pymysql.cursors.DictCursor,
     "autocommit":  False,
