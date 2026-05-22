@@ -1,5 +1,5 @@
-flask
-flask-cors
-pymysql
-dbutils
-gunicorn
+Flask==3.0.2
+Flask-CORS==4.0.0
+PyMySQL==1.1.0
+DBUtils==3.1.0
+gunicorn==21.2.0
