@@ -28,11 +28,12 @@ DB_CONFIG = {
     "host":        os.environ.get("DB_HOST", "ballast.proxy.rlwy.net"),
     "port":        int(os.environ.get("DB_PORT", 52354)),
     "user":        os.environ.get("DB_USER", "root"),
-    "password":    os.environ.get("DB_PASSWORD", ""),
+    # Ponemos tu clave real de Railway como respaldo si la variable de entorno falla:
+    "password":    os.environ.get("DB_PASSWORD", "idJOASRTJSKhKqWSFyGlmXNmrshXrsnn"),
     "database":    os.environ.get("DB_NAME", "railway"),
     "charset":     "utf8mb4",
     "cursorclass": pymysql.cursors.DictCursor,
-    "autocommit":  False,
+    "autocommit":  False
 }
 
 pool = PooledDB(
