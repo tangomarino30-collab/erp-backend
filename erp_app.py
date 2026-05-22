@@ -1,56 +1,49 @@
 """
-ERP Server - Railway deployment
+ERP Server - Railway deployment (JWT Architecture)
 """
 
 import os
-from datetime import datetime
-from flask import Flask, jsonify, request, session
+import jwt
+from datetime import datetime, timedelta, timezone
+from functools import wraps
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import pymysql
 import pymysql.cursors
-from dbutils.pooled_db import PooledDB
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "erp_secret_key_2024")
-app.config.update(
-    SESSION_COOKIE_SAMESITE="None",
-    SESSION_COOKIE_SECURE=True
-)
-# CORS: permite llamadas desde GitHub Pages
-CORS(app,
-     supports_credentials=True,
-     origins=os.environ.get("ALLOWED_ORIGIN", "*"))
+app.secret_key = os.environ.get("SECRET_KEY", "erp_secret_key_2026")
+CORS(app, origins="*")
 
 PORT = int(os.environ.get("PORT", 5050))
 
-# ──────────────────────────────────────────────
-# POOL DE CONEXIONES
-# ──────────────────────────────────────────────
-
-DB_CONFIG = {
-    "host":        os.environ.get("DB_HOST", "ballast.proxy.rlwy.net"),
-    "port":        int(os.environ.get("DB_PORT", 52354)),
-    "user":        os.environ.get("DB_USER", "root"),
-    # Ponemos tu clave real de Railway como respaldo si la variable de entorno falla:
-    "password":    os.environ.get("DB_PASSWORD", "idJOASRTJSKhKqWSFyGlmXNmrshXrsnn"),
-    "database":    os.environ.get("DB_NAME", "railway"),
-    "charset":     "utf8mb4",
-    "cursorclass": pymysql.cursors.DictCursor,
-    "autocommit":  False
-}
-
-pool = PooledDB(
-    creator=pymysql, maxconnections=10,
-    mincached=2, maxcached=5,
-    blocking=True, ping=1, **DB_CONFIG
-)
-
 def get_conn():
-    return pool.connection()
+    return pymysql.connect(
+        host=os.environ.get("DB_HOST", "ballast.proxy.rlwy.net"),
+        port=int(os.environ.get("DB_PORT", 52354)),
+        user=os.environ.get("DB_USER", "root"),
+        password=os.environ.get("DB_PASSWORD", "idJOASRTJSKhKqWSFyGlmXNmrshXrsnn"),
+        database=os.environ.get("DB_NAME", "railway"),
+        charset="utf8mb4",
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=True
+    )
 
-# ──────────────────────────────────────────────
-# INICIALIZAR TABLAS
-# ──────────────────────────────────────────────
+def token_requerido(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = request.headers.get("Authorization")
+        if not token:
+            return jsonify({"error": "Token ausente."}), 401
+        try:
+            if token.startswith("Bearer "):
+                token = token.split(" ")[1]
+            data = jwt.decode(token, app.secret_key, algorithms=["HS256"])
+            current_user = data["cod_cliente"]
+        except:
+            return jsonify({"error": "Token inválido o expirado."}), 401
+        return f(current_user, *args, **kwargs)
+    return decorated
 
 def inicializar_db():
     conn = get_conn()
@@ -103,32 +96,15 @@ def inicializar_db():
                     cod_cliente VARCHAR(20)  NOT NULL
                 )
             """)
-        conn.commit()
         print("[ERP] Tablas verificadas ✓")
     except Exception as e:
         print(f"[ERROR Inicializar DB]: {e}")
     finally:
         conn.close()
 
-# ──────────────────────────────────────────────
-# HELPERS
-# ──────────────────────────────────────────────
-
-def cliente_sesion():
-    return session.get("cod_cliente")
-
-def usuario_sesion():
-    return session.get("usuario")
-
-# ──────────────────────────────────────────────
-# RUTAS
-# ──────────────────────────────────────────────
-
 @app.route("/")
 def index():
     return jsonify({"status": "ERP API running"})
-
-# ── LOGIN / LOGOUT ──
 
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -138,79 +114,22 @@ def login():
         nombre = data.get("usuario", "").strip().lower()
         clave  = data.get("clave", "").strip()
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM usuarios WHERE nombre=%s AND clave=%s",
-                (nombre, clave)
-            )
+            cur.execute("SELECT * FROM usuarios WHERE nombre=%s AND clave=%s", (nombre, clave))
             user = cur.fetchone()
         if not user:
             return jsonify({"error": "Usuario o clave incorrectos."}), 401
-        session["usuario"]     = user["nombre"]
-        session["cod_cliente"] = user["cod_cliente"]
-        return jsonify({"ok": True, "usuario": user["nombre"], "cod_cliente": user["cod_cliente"]})
+        
+        token = jwt.encode({
+            "usuario": user["nombre"],
+            "cod_cliente": user["cod_cliente"],
+            "exp": datetime.now(timezone.utc) + timedelta(hours=24)
+        }, app.secret_key, algorithm=["HS256"])
+        
+        return jsonify({"ok": True, "token": token, "usuario": user["nombre"], "cod_cliente": user["cod_cliente"]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
-
-@app.route("/api/logout", methods=["POST"])
-def logout():
-    session.clear()
-    return jsonify({"ok": True})
-
-@app.route("/api/sesion", methods=["GET"])
-def sesion():
-    if not usuario_sesion():
-        return jsonify({"logueado": False})
-    return jsonify({"logueado": True, "usuario": usuario_sesion(), "cod_cliente": cliente_sesion()})
-
-# ── CLIENTES ──
-
-@app.route("/api/clientes", methods=["GET"])
-def get_clientes():
-    cod = cliente_sesion()
-    if not cod:
-        return jsonify({"error": "No autenticado."}), 401
-    conn = get_conn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM clientes WHERE codigo=%s", (cod,))
-            row = cur.fetchone()
-            if not row:
-                return jsonify({})
-            cur.execute("SELECT * FROM comprobantes WHERE cod_cliente=%s ORDER BY id ASC", (cod,))
-            comps = cur.fetchall()
-            cur.execute("SELECT * FROM pagos WHERE cod_cliente=%s ORDER BY id ASC", (cod,))
-            pagos = cur.fetchall()
-
-        cliente = {
-            "nombre":      row["nombre"],
-            "email":       row["email"] or "",
-            "deuda":       float(row["deuda"]),
-            "movimientos": [],
-            "pagos":       [],
-        }
-
-        vistos = {}
-        for c in comps:
-            nro = c["nro"]
-            if nro not in vistos:
-                vistos[nro] = {"nro": nro, "fecha": c["fecha"],
-                               "desc": c["descripcion"], "val": 0.0}
-            vistos[nro]["val"] = round(vistos[nro]["val"] + float(c["importe"]), 2)
-        cliente["movimientos"] = list(vistos.values())
-
-        for p in pagos:
-            cliente["pagos"].append({"fecha": p["fecha"], "val": float(p["monto_aplicado"])})
-
-        return jsonify({cod: cliente})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
-# ── REGISTRO ──
-
 @app.route("/api/registro", methods=["POST"])
 def registro():
     conn = get_conn()
@@ -230,23 +149,53 @@ def registro():
             while nuevo_cod in codigos:
                 nuevo_cod += 1
             nuevo_cod = str(nuevo_cod)
-            cur.execute(
-                "INSERT INTO clientes (codigo, nombre, deuda) VALUES (%s,%s,0)",
-                (nuevo_cod, user)
-            )
-            cur.execute(
-                "INSERT INTO usuarios (nombre, clave, cod_cliente) VALUES (%s,%s,%s)",
-                (user, clave, nuevo_cod)
-            )
-        conn.commit()
+            cur.execute("INSERT INTO clientes (codigo, nombre, deuda) VALUES (%s,%s,0)", (nuevo_cod, user))
+            cur.execute("INSERT INTO usuarios (nombre, clave, cod_cliente) VALUES (%s,%s,%s)", (user, clave, nuevo_cod))
         return jsonify({"ok": True, "codigo": nuevo_cod})
     except Exception as e:
-        conn.rollback()
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
-# ── PRODUCTOS ──
+@app.route("/api/clientes", methods=["GET"])
+@token_requerido
+def get_clientes(current_user):
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM clientes WHERE codigo=%s", (current_user,))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({})
+            cur.execute("SELECT * FROM comprobantes WHERE cod_cliente=%s ORDER BY id ASC", (current_user,))
+            comps = cur.fetchall()
+            cur.execute("SELECT * FROM pagos WHERE cod_cliente=%s ORDER BY id ASC", (current_user,))
+            pagos = cur.fetchall()
+
+        cliente = {
+            "nombre":      row["nombre"],
+            "email":       row["email"] or "",
+            "deuda":       float(row["deuda"]),
+            "movimientos": [],
+            "pagos":       [],
+        }
+
+        vistos = {}
+        for c in comps:
+            nro = c["nro"]
+            if nro not in vistos:
+                vistos[nro] = {"nro": nro, "fecha": c["fecha"], "desc": c["descripcion"], "val": 0.0}
+            vistos[nro]["val"] = round(vistos[nro]["val"] + float(c["importe"]), 2)
+        cliente["movimientos"] = list(vistos.values())
+
+        for p in pagos:
+            cliente["pagos"].append({"fecha": p["fecha"], "val": float(p["monto_aplicado"])})
+
+        return jsonify({current_user: cliente})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 @app.route("/api/productos", methods=["GET"])
 def get_productos():
@@ -256,21 +205,55 @@ def get_productos():
             cur.execute("SELECT * FROM productos ORDER BY nombre ASC")
             rows = cur.fetchall()
         return jsonify([{
-            "codigo": r["codigo"],
-            "nombre": r["nombre"],
-            "precio": float(r["precio"]),
-            "stock":  int(r["stock"]),
+            "codigo": r["codigo"], "nombre": r["nombre"],
+            "precio": float(r["precio"]), "stock":  int(r["stock"]),
         } for r in rows])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
 
-# ──────────────────────────────────────────────
-# ARRANQUE DE LA APLICACIÓN (CORRECCIÓN CRÍTICA)
-# ──────────────────────────────────────────────
+@app.route("/api/pedido", methods=["POST"])
+@token_requerido
+def post_pedido(current_user):
+    conn = get_conn()
+    try:
+        data  = request.json
+        nro   = data["nro"]
+        items = data["items"]
+        fecha = datetime.now().strftime("%d/%m/%Y")
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM clientes WHERE codigo=%s", (current_user,))
+            cliente = cur.fetchone()
+            if not cliente:
+                return jsonify({"error": "Cliente no encontrado."}), 404
+            if not items:
+                return jsonify({"error": "El carrito está vacío."}), 400
+
+            nombre      = cliente["nombre"]
+            total       = round(sum(i["cantidad"] * i["precio"] for i in items), 2)
+            nueva_deuda = round(float(cliente["deuda"]) + total, 2)
+
+            for item in items:
+                importe = round(item["cantidad"] * item["precio"], 2)
+                cur.execute("""
+                    INSERT INTO comprobantes
+                    (nro, fecha, cod_cliente, nombre_cliente, descripcion, cantidad, precio_unit, importe)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (nro, fecha, current_user, nombre, item["nombre"], item["cantidad"], item["precio"], importe))
+
+            cur.execute("UPDATE clientes SET deuda=%s WHERE codigo=%s", (nueva_deuda, current_user))
+
+            for item in items:
+                cur.execute("UPDATE productos SET stock = GREATEST(0, stock - %s) WHERE codigo=%s", (item["cantidad"], item["codigo"]))
+
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 if __name__ == '__main__':
     inicializar_db()
-    # Ejecuta en el puerto asignado dinámicamente por Railway
     app.run(host="0.0.0.0", port=PORT)
