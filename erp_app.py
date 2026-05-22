@@ -12,7 +12,10 @@ from dbutils.pooled_db import PooledDB
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "erp_secret_key_2024")
-
+app.config.update(
+    SESSION_COOKIE_SAMESITE="None",
+    SESSION_COOKIE_SECURE=True
+)
 # CORS: permite llamadas desde GitHub Pages
 CORS(app,
      supports_credentials=True,
