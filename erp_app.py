@@ -101,6 +101,8 @@ def inicializar_db():
             """)
         conn.commit()
         print("[ERP] Tablas verificadas ✓")
+    except Exception as e:
+        print(f"[ERROR Inicializar DB]: {e}")
     finally:
         conn.close()
 
@@ -244,8 +246,6 @@ def registro():
 
 @app.route("/api/productos", methods=["GET"])
 def get_productos():
-    if not usuario_sesion():
-        return jsonify({"error": "No autenticado."}), 401
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -262,102 +262,11 @@ def get_productos():
     finally:
         conn.close()
 
-# ── PEDIDO ──
-
-@app.route("/api/pedido", methods=["POST"])
-def post_pedido():
-    cod = cliente_sesion()
-    if not cod:
-        return jsonify({"error": "No autenticado."}), 401
-    conn = get_conn()
-    try:
-        data  = request.json
-        nro   = data["nro"]
-        items = data["items"]
-        fecha = datetime.now().strftime("%d/%m/%Y")
-
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM clientes WHERE codigo=%s", (cod,))
-            cliente = cur.fetchone()
-            if not cliente or not items:
-                return jsonify({"error": "Datos inválidos."}), 400
-
-            nombre      = cliente["nombre"]
-            total       = round(sum(i["cantidad"] * i["precio"] for i in items), 2)
-            nueva_deuda = round(float(cliente["deuda"]) + total, 2)
-
-            for item in items:
-                importe = round(item["cantidad"] * item["precio"], 2)
-                cur.execute("""
-                    INSERT INTO comprobantes
-                    (nro, fecha, cod_cliente, nombre_cliente, descripcion, cantidad, precio_unit, importe)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                """, (nro, fecha, cod, nombre,
-                      item["nombre"], item["cantidad"], item["precio"], importe))
-
-            cur.execute("UPDATE clientes SET deuda=%s WHERE codigo=%s", (nueva_deuda, cod))
-
-            for item in items:
-                cur.execute("""
-                    UPDATE productos SET stock = GREATEST(0, stock - %s) WHERE codigo=%s
-                """, (item["cantidad"], item["codigo"]))
-
-        conn.commit()
-        return jsonify({"ok": True, "fecha": fecha, "nombre": nombre, "total": total})
-    except Exception as e:
-        conn.rollback()
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
-# ── PAGOS ──
-
-@app.route("/api/pagos", methods=["POST"])
-def post_pago():
-    cod = cliente_sesion()
-    if not cod:
-        return jsonify({"error": "No autenticado."}), 401
-    conn = get_conn()
-    try:
-        data  = request.json
-        monto = round(float(data["monto"]), 2)
-        fecha = datetime.now().strftime("%d/%m/%Y")
-
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM clientes WHERE codigo=%s", (cod,))
-            cliente = cur.fetchone()
-            if not cliente:
-                return jsonify({"error": "Cliente no encontrado."}), 404
-
-            deuda_actual = float(cliente["deuda"])
-            if deuda_actual <= 0:
-                return jsonify({"error": "No tenés deuda pendiente."}), 400
-
-            aplicado       = round(min(monto, deuda_actual), 2)
-            deuda_restante = round(deuda_actual - aplicado, 2)
-            nombre         = cliente["nombre"]
-
-            cur.execute("""
-                INSERT INTO pagos (fecha, cod_cliente, nombre_cliente, monto_aplicado, deuda_restante)
-                VALUES (%s,%s,%s,%s,%s)
-            """, (fecha, cod, nombre, aplicado, deuda_restante))
-
-            cur.execute("UPDATE clientes SET deuda=%s WHERE codigo=%s", (deuda_restante, cod))
-
-        conn.commit()
-        return jsonify({"ok": True, "aplicado": aplicado, "deuda_restante": deuda_restante})
-    except Exception as e:
-        conn.rollback()
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
-
 # ──────────────────────────────────────────────
-# ARRANQUE
+# ARRANQUE DE LA APLICACIÓN (CORRECCIÓN CRÍTICA)
 # ──────────────────────────────────────────────
 
-if __name__ == "__main__":
-    print("\n[ERP] Conectando a MySQL en Railway...")
+if __name__ == '__main__':
     inicializar_db()
-    print(f"[ERP] Servidor en puerto {PORT}")
-    app.run(host="0.0.0.0", port=PORT, debug=False)
+    # Ejecuta en el puerto asignado dinámicamente por Railway
+    app.run(host="0.0.0.0", port=PORT)
