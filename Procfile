@@ -1,1 +1,1 @@
-web: python erp_server.py
+web: gunicorn erp_server:app --bind 0.0.0.0:$PORT
