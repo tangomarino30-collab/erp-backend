@@ -1,1 +1,1 @@
-web: python erp_server.py
+web: python erp_app.py
