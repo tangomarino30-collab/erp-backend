@@ -1,5 +1,0 @@
-flask
-pymysql
-dbutils
-flask-cors
-gunicorn
