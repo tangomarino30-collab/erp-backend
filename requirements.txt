@@ -1,0 +1,4 @@
+flask
+flask-cors
+libsql-experimental
+gunicorn
