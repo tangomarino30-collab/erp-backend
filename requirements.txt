@@ -1,4 +1,4 @@
 flask
 flask-cors
-libsql-experimental
+libsql-client
 gunicorn
