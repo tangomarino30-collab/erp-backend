@@ -1,12 +1,12 @@
 """
-ERP Server - Render + Turso
+ERP Server - Render + Turso (libsql_client)
 """
 
 import os
 from datetime import datetime
 from flask import Flask, jsonify, request, session
 from flask_cors import CORS
-import libsql_experimental as libsql
+import libsql_client
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "erp_secret_key_2024")
@@ -14,13 +14,19 @@ CORS(app, supports_credentials=True, origins=os.environ.get("ALLOWED_ORIGIN", "*
 
 PORT = int(os.environ.get("PORT", 5050))
 
-TURSO_URL = os.environ.get("TURSO_URL")        # ej: libsql://chofi-tangoch.aws-us-east-1.turso.io
+TURSO_URL = os.environ.get("TURSO_URL", "").replace("libsql://", "https://")
 TURSO_TOKEN = os.environ.get("TURSO_TOKEN")
 
 def get_conn():
-    conn = libsql.connect("erp-local.db", sync_url=TURSO_URL, auth_token=TURSO_TOKEN)
-    conn.sync()
-    return conn
+    return libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
+
+def rs_to_dicts(rs):
+    return [dict(zip(rs.columns, row)) for row in rs.rows]
+
+def rs_to_dict_one(rs):
+    if not rs.rows:
+        return None
+    return dict(zip(rs.columns, rs.rows[0]))
 
 # ──────────────────────────────────────────────
 # INICIALIZAR TABLAS
@@ -75,11 +81,11 @@ def inicializar_db():
             cod_cliente TEXT NOT NULL
         )
     """)
-    conn.commit()
+    conn.close()
     print("[ERP] Tablas verificadas en Turso ✓")
 
 # ──────────────────────────────────────────────
-# HELPERS
+# HELPERS SESION
 # ──────────────────────────────────────────────
 
 def cliente_sesion():
@@ -87,10 +93,6 @@ def cliente_sesion():
 
 def usuario_sesion():
     return session.get("usuario")
-
-def row_to_dict(cur, row):
-    cols = [d[0] for d in cur.description]
-    return dict(zip(cols, row))
 
 # ──────────────────────────────────────────────
 # RUTAS
@@ -104,21 +106,22 @@ def index():
 
 @app.route("/api/login", methods=["POST"])
 def login():
+    conn = get_conn()
     try:
         data   = request.json
         nombre = data.get("usuario", "").strip().lower()
         clave  = data.get("clave", "").strip()
-        conn = get_conn()
-        cur = conn.execute("SELECT * FROM usuarios WHERE nombre=? AND clave=?", (nombre, clave))
-        row = cur.fetchone()
-        if not row:
+        rs = conn.execute("SELECT * FROM usuarios WHERE nombre=? AND clave=?", (nombre, clave))
+        user = rs_to_dict_one(rs)
+        if not user:
             return jsonify({"error": "Usuario o clave incorrectos."}), 401
-        user = row_to_dict(cur, row)
         session["usuario"]     = user["nombre"]
         session["cod_cliente"] = user["cod_cliente"]
         return jsonify({"ok": True, "usuario": user["nombre"], "cod_cliente": user["cod_cliente"]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 @app.route("/api/logout", methods=["POST"])
 def logout():
@@ -133,6 +136,7 @@ def sesion():
 
 @app.route("/api/registro", methods=["POST"])
 def registro():
+    conn = get_conn()
     try:
         data  = request.json
         user  = data.get("usuario", "").strip().lower()
@@ -140,15 +144,14 @@ def registro():
         if not user or not clave:
             return jsonify({"error": "Completá usuario y clave."}), 400
 
-        conn = get_conn()
-        cur = conn.execute("SELECT id FROM usuarios WHERE nombre=?", (user,))
-        if cur.fetchone():
+        rs = conn.execute("SELECT id FROM usuarios WHERE nombre=?", (user,))
+        if rs.rows:
             return jsonify({"error": "Ese nombre de usuario ya existe."}), 400
 
-        cur = conn.execute("SELECT codigo FROM clientes")
+        rs = conn.execute("SELECT codigo FROM clientes")
         codigos = set()
-        for r in cur.fetchall():
-            val = r[0]
+        for row in rs.rows:
+            val = row[0]
             if str(val).isdigit():
                 codigos.add(int(val))
         nuevo_cod = 1
@@ -158,10 +161,11 @@ def registro():
 
         conn.execute("INSERT INTO clientes (codigo, nombre, deuda) VALUES (?,?,0)", (nuevo_cod, user))
         conn.execute("INSERT INTO usuarios (nombre, clave, cod_cliente) VALUES (?,?,?)", (user, clave, nuevo_cod))
-        conn.commit()
         return jsonify({"ok": True, "codigo": nuevo_cod})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 # ── CLIENTES ──
 
@@ -170,19 +174,18 @@ def get_clientes():
     cod = cliente_sesion()
     if not cod:
         return jsonify({"error": "No autenticado."}), 401
+    conn = get_conn()
     try:
-        conn = get_conn()
-        cur = conn.execute("SELECT * FROM clientes WHERE codigo=?", (cod,))
-        row = cur.fetchone()
-        if not row:
+        rs = conn.execute("SELECT * FROM clientes WHERE codigo=?", (cod,))
+        cliente_row = rs_to_dict_one(rs)
+        if not cliente_row:
             return jsonify({})
-        cliente_row = row_to_dict(cur, row)
 
-        cur = conn.execute("SELECT * FROM comprobantes WHERE cod_cliente=? ORDER BY id ASC", (cod,))
-        comps = [row_to_dict(cur, r) for r in cur.fetchall()]
+        rs = conn.execute("SELECT * FROM comprobantes WHERE cod_cliente=? ORDER BY id ASC", (cod,))
+        comps = rs_to_dicts(rs)
 
-        cur = conn.execute("SELECT * FROM pagos WHERE cod_cliente=? ORDER BY id ASC", (cod,))
-        pagos = [row_to_dict(cur, r) for r in cur.fetchall()]
+        rs = conn.execute("SELECT * FROM pagos WHERE cod_cliente=? ORDER BY id ASC", (cod,))
+        pagos = rs_to_dicts(rs)
 
         cliente = {
             "nombre":      cliente_row["nombre"],
@@ -206,6 +209,8 @@ def get_clientes():
         return jsonify({cod: cliente})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 # ── PRODUCTOS ──
 
@@ -213,16 +218,18 @@ def get_clientes():
 def get_productos():
     if not usuario_sesion():
         return jsonify({"error": "No autenticado."}), 401
+    conn = get_conn()
     try:
-        conn = get_conn()
-        cur = conn.execute("SELECT * FROM productos ORDER BY nombre ASC")
-        rows = [row_to_dict(cur, r) for r in cur.fetchall()]
+        rs = conn.execute("SELECT * FROM productos ORDER BY nombre ASC")
+        rows = rs_to_dicts(rs)
         return jsonify([{
             "codigo": r["codigo"], "nombre": r["nombre"],
             "precio": float(r["precio"]), "stock": int(r["stock"]),
         } for r in rows])
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 # ── PEDIDO ──
 
@@ -231,18 +238,17 @@ def post_pedido():
     cod = cliente_sesion()
     if not cod:
         return jsonify({"error": "No autenticado."}), 401
+    conn = get_conn()
     try:
         data  = request.json
         nro   = data["nro"]
         items = data["items"]
         fecha = datetime.now().strftime("%d/%m/%Y")
 
-        conn = get_conn()
-        cur = conn.execute("SELECT * FROM clientes WHERE codigo=?", (cod,))
-        row = cur.fetchone()
-        if not row or not items:
+        rs = conn.execute("SELECT * FROM clientes WHERE codigo=?", (cod,))
+        cliente = rs_to_dict_one(rs)
+        if not cliente or not items:
             return jsonify({"error": "Datos inválidos."}), 400
-        cliente = row_to_dict(cur, row)
 
         nombre      = cliente["nombre"]
         total       = round(sum(i["cantidad"] * i["precio"] for i in items), 2)
@@ -262,10 +268,11 @@ def post_pedido():
             conn.execute("UPDATE productos SET stock = MAX(0, stock - ?) WHERE codigo=?",
                          (item["cantidad"], item["codigo"]))
 
-        conn.commit()
         return jsonify({"ok": True, "fecha": fecha, "nombre": nombre, "total": total})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 # ── PAGOS ──
 
@@ -274,17 +281,16 @@ def post_pago():
     cod = cliente_sesion()
     if not cod:
         return jsonify({"error": "No autenticado."}), 401
+    conn = get_conn()
     try:
         data  = request.json
         monto = round(float(data["monto"]), 2)
         fecha = datetime.now().strftime("%d/%m/%Y")
 
-        conn = get_conn()
-        cur = conn.execute("SELECT * FROM clientes WHERE codigo=?", (cod,))
-        row = cur.fetchone()
-        if not row:
+        rs = conn.execute("SELECT * FROM clientes WHERE codigo=?", (cod,))
+        cliente = rs_to_dict_one(rs)
+        if not cliente:
             return jsonify({"error": "Cliente no encontrado."}), 404
-        cliente = row_to_dict(cur, row)
 
         deuda_actual = float(cliente["deuda"])
         if deuda_actual <= 0:
@@ -300,10 +306,11 @@ def post_pago():
         """, (fecha, cod, nombre, aplicado, deuda_restante))
 
         conn.execute("UPDATE clientes SET deuda=? WHERE codigo=?", (deuda_restante, cod))
-        conn.commit()
         return jsonify({"ok": True, "aplicado": aplicado, "deuda_restante": deuda_restante})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 # ──────────────────────────────────────────────
 # ARRANQUE
