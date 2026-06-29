@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ERP · Login</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,sans-serif;}
+  body{
+    min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(135deg,#0d9488 0%,#14b8a6 50%,#5eead4 100%);
+  }
+  .card{
+    background:#fff;border-radius:16px;padding:32px;width:100%;max-width:380px;
+    box-shadow:0 10px 30px rgba(0,0,0,.2);
+  }
+  h1{font-size:22px;margin-bottom:4px;color:#0d9488;text-align:center;}
+  p.sub{text-align:center;color:#777;font-size:13px;margin-bottom:24px;}
+  label{font-size:13px;color:#333;display:block;margin-bottom:4px;}
+  input{
+    width:100%;padding:10px 12px;border:1px solid #ddd;border-radius:8px;
+    margin-bottom:14px;font-size:14px;
+  }
+  input:focus{outline:none;border-color:#0d9488;}
+  button{
+    width:100%;padding:11px;border:none;border-radius:8px;background:#0d9488;
+    color:#fff;font-size:15px;font-weight:bold;cursor:pointer;margin-top:4px;
+  }
+  button:hover{background:#0b7d73;}
+  .toggle{text-align:center;margin-top:16px;font-size:13px;color:#555;}
+  .toggle a{color:#0d9488;cursor:pointer;text-decoration:underline;}
+  .msg{font-size:13px;text-align:center;margin-bottom:12px;min-height:18px;}
+  .msg.error{color:#dc2626;}
+  .msg.ok{color:#16a34a;}
+  #panel{display:none;}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>ERP</h1>
+  <p class="sub" id="subtitulo">Ingresá a tu cuenta</p>
+
+  <div id="msg" class="msg"></div>
+
+  <!-- LOGIN -->
+  <form id="formLogin">
+    <label>Usuario</label>
+    <input type="text" id="loginUsuario" required>
+    <label>Clave</label>
+    <input type="password" id="loginClave" required>
+    <button type="submit">Ingresar</button>
+  </form>
+
+  <!-- REGISTRO -->
+  <form id="formRegistro" style="display:none;">
+    <label>Nuevo usuario</label>
+    <input type="text" id="regUsuario" required>
+    <label>Clave</label>
+    <input type="password" id="regClave" required>
+    <button type="submit">Crear cuenta</button>
+  </form>
+
+  <div class="toggle">
+    <span id="textoToggleLogin">¿No tenés cuenta? <a id="irRegistro">Registrate</a></span>
+    <span id="textoToggleRegistro" style="display:none;">¿Ya tenés cuenta? <a id="irLogin">Ingresá</a></span>
+  </div>
+</div>
+
+<!-- PANEL POST-LOGIN (simple, para confirmar conexión) -->
+<div class="card" id="panel">
+  <h1>¡Hola!</h1>
+  <p class="sub" id="panelInfo"></p>
+  <button id="btnLogout">Cerrar sesión</button>
+</div>
+
+<script>
+var API_BASE = 'https://erp-backend-bsyv.onrender.com'; // <-- reemplazar con la URL de Render
+
+async function api(url, method, body){
+  var opts = {method:method||'GET', headers:{'Content-Type':'application/json'}, credentials:'include'};
+  if(body) opts.body = JSON.stringify(body);
+  var r = await fetch(API_BASE + url, opts);
+  return r.json();
+}
+
+function mostrarMsg(texto, tipo){
+  var m = document.getElementById('msg');
+  m.textContent = texto;
+  m.className = 'msg ' + (tipo || '');
+}
+
+// Toggle login / registro
+document.getElementById('irRegistro').onclick = function(){
+  document.getElementById('formLogin').style.display = 'none';
+  document.getElementById('formRegistro').style.display = 'block';
+  document.getElementById('textoToggleLogin').style.display = 'none';
+  document.getElementById('textoToggleRegistro').style.display = 'block';
+  document.getElementById('subtitulo').textContent = 'Creá tu cuenta';
+  mostrarMsg('');
+};
+document.getElementById('irLogin').onclick = function(){
+  document.getElementById('formRegistro').style.display = 'none';
+  document.getElementById('formLogin').style.display = 'block';
+  document.getElementById('textoToggleRegistro').style.display = 'none';
+  document.getElementById('textoToggleLogin').style.display = 'block';
+  document.getElementById('subtitulo').textContent = 'Ingresá a tu cuenta';
+  mostrarMsg('');
+};
+
+// Login
+document.getElementById('formLogin').addEventListener('submit', async function(e){
+  e.preventDefault();
+  mostrarMsg('Ingresando...');
+  var usuario = document.getElementById('loginUsuario').value.trim();
+  var clave = document.getElementById('loginClave').value.trim();
+  try{
+    var res = await api('/api/login', 'POST', {usuario: usuario, clave: clave});
+    if(res.error){
+      mostrarMsg(res.error, 'error');
+    } else {
+      mostrarLogueado(res.usuario, res.cod_cliente);
+    }
+  }catch(err){
+    mostrarMsg('No se pudo conectar al servidor.', 'error');
+  }
+});
+
+// Registro
+document.getElementById('formRegistro').addEventListener('submit', async function(e){
+  e.preventDefault();
+  mostrarMsg('Creando cuenta...');
+  var usuario = document.getElementById('regUsuario').value.trim();
+  var clave = document.getElementById('regClave').value.trim();
+  try{
+    var res = await api('/api/registro', 'POST', {usuario: usuario, clave: clave});
+    if(res.error){
+      mostrarMsg(res.error, 'error');
+    } else {
+      mostrarMsg('Cuenta creada. Iniciando sesión...', 'ok');
+      var login = await api('/api/login', 'POST', {usuario: usuario, clave: clave});
+      if(!login.error) mostrarLogueado(login.usuario, login.cod_cliente);
+    }
+  }catch(err){
+    mostrarMsg('No se pudo conectar al servidor.', 'error');
+  }
+});
+
+function mostrarLogueado(usuario, cod){
+  document.querySelector('.card:not(#panel)').style.display = 'none';
+  document.getElementById('panel').style.display = 'block';
+  document.getElementById('panelInfo').textContent = 'Usuario: ' + usuario + ' · Código cliente: ' + cod;
+}
+
+document.getElementById('btnLogout').addEventListener('click', async function(){
+  await api('/api/logout', 'POST');
+  document.getElementById('panel').style.display = 'none';
+  document.querySelector('.card:not(#panel)').style.display = 'block';
+  document.getElementById('loginUsuario').value = '';
+  document.getElementById('loginClave').value = '';
+  mostrarMsg('');
+});
+
+// Verificar sesión activa al cargar
+(async function(){
+  try{
+    var s = await api('/api/sesion');
+    if(s.logueado) mostrarLogueado(s.usuario, s.cod_cliente);
+  }catch(e){}
+})();
+</script>
+
+</body>
+</html>
