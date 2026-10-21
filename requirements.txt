@@ -2,3 +2,5 @@ flask
 flask-cors
 libsql-client
 gunicorn
+google-auth
+requests
