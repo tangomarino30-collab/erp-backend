@@ -1,21 +1,32 @@
 """
-ERP Server - Render + Turso (libsql_client)
+ERP Server - Render + Turso (libsql_client) + Login con Google
 """
 
 import os
+import secrets
 from datetime import datetime
 from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 import libsql_client
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "erp_secret_key_2024")
+# Cookies de sesión válidas entre GitHub Pages y Render (dominios distintos)
+app.config["SESSION_COOKIE_SAMESITE"] = "None"
+app.config["SESSION_COOKIE_SECURE"] = True
 CORS(app, supports_credentials=True, origins=os.environ.get("ALLOWED_ORIGIN", "*"))
 
 PORT = int(os.environ.get("PORT", 5050))
 
 TURSO_URL = os.environ.get("TURSO_URL", "").replace("libsql://", "https://")
 TURSO_TOKEN = os.environ.get("TURSO_TOKEN")
+
+GOOGLE_CLIENT_ID = os.environ.get(
+    "GOOGLE_CLIENT_ID",
+    "185969383144-mpmkgaaaci95cbep3if552h47uovu3df.apps.googleusercontent.com",
+)
 
 def get_conn():
     return libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
@@ -102,22 +113,53 @@ def usuario_sesion():
 def index():
     return jsonify({"status": "ERP API (Turso) running"})
 
-# ── LOGIN / LOGOUT / REGISTRO ──
+# ── LOGIN CON GOOGLE / LOGOUT ──
 
-@app.route("/api/login", methods=["POST"])
-def login():
+@app.route("/api/google", methods=["POST"])
+def login_google():
     conn = get_conn()
     try:
-        data   = request.json
-        nombre = data.get("usuario", "").strip().lower()
-        clave  = data.get("clave", "").strip()
-        rs = conn.execute("SELECT * FROM usuarios WHERE nombre=? AND clave=?", (nombre, clave))
+        credential = (request.json or {}).get("credential", "")
+        if not credential:
+            return jsonify({"error": "Falta el token de Google."}), 400
+
+        info = id_token.verify_oauth2_token(
+            credential, google_requests.Request(), GOOGLE_CLIENT_ID
+        )
+        if not info.get("email_verified"):
+            return jsonify({"error": "El email de Google no está verificado."}), 401
+
+        email = info["email"].strip().lower()
+
+        rs = conn.execute("SELECT * FROM usuarios WHERE nombre=?", (email,))
         user = rs_to_dict_one(rs)
+
         if not user:
-            return jsonify({"error": "Usuario o clave incorrectos."}), 401
+            rs = conn.execute("SELECT codigo FROM clientes")
+            codigos = set()
+            for row in rs.rows:
+                if str(row[0]).isdigit():
+                    codigos.add(int(row[0]))
+            nuevo_cod = 1
+            while nuevo_cod in codigos:
+                nuevo_cod += 1
+            nuevo_cod = str(nuevo_cod)
+
+            conn.execute(
+                "INSERT INTO clientes (codigo, nombre, email, deuda) VALUES (?,?,?,0)",
+                (nuevo_cod, info.get("name") or email, email),
+            )
+            conn.execute(
+                "INSERT INTO usuarios (nombre, clave, cod_cliente) VALUES (?,?,?)",
+                (email, "google-" + secrets.token_hex(16), nuevo_cod),
+            )
+            user = {"nombre": email, "cod_cliente": nuevo_cod}
+
         session["usuario"]     = user["nombre"]
         session["cod_cliente"] = user["cod_cliente"]
         return jsonify({"ok": True, "usuario": user["nombre"], "cod_cliente": user["cod_cliente"]})
+    except ValueError:
+        return jsonify({"error": "Token de Google inválido."}), 401
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     finally:
@@ -134,38 +176,6 @@ def sesion():
         return jsonify({"logueado": False})
     return jsonify({"logueado": True, "usuario": usuario_sesion(), "cod_cliente": cliente_sesion()})
 
-@app.route("/api/registro", methods=["POST"])
-def registro():
-    conn = get_conn()
-    try:
-        data  = request.json
-        user  = data.get("usuario", "").strip().lower()
-        clave = data.get("clave", "").strip()
-        if not user or not clave:
-            return jsonify({"error": "Completá usuario y clave."}), 400
-
-        rs = conn.execute("SELECT id FROM usuarios WHERE nombre=?", (user,))
-        if rs.rows:
-            return jsonify({"error": "Ese nombre de usuario ya existe."}), 400
-
-        rs = conn.execute("SELECT codigo FROM clientes")
-        codigos = set()
-        for row in rs.rows:
-            val = row[0]
-            if str(val).isdigit():
-                codigos.add(int(val))
-        nuevo_cod = 1
-        while nuevo_cod in codigos:
-            nuevo_cod += 1
-        nuevo_cod = str(nuevo_cod)
-
-        conn.execute("INSERT INTO clientes (codigo, nombre, deuda) VALUES (?,?,0)", (nuevo_cod, user))
-        conn.execute("INSERT INTO usuarios (nombre, clave, cod_cliente) VALUES (?,?,?)", (user, clave, nuevo_cod))
-        return jsonify({"ok": True, "codigo": nuevo_cod})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        conn.close()
 
 # ── CLIENTES ──
 
