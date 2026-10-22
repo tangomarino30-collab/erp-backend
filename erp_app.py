@@ -10,7 +10,7 @@ from flask_cors import CORS
 import libsql_client
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
-from mercadopago import MercadoPagoConfig
+import mercadopago
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "erp_secret_key_2024")
@@ -28,7 +28,7 @@ GOOGLE_CLIENT_ID = os.environ.get(
     "GOOGLE_CLIENT_ID",
     "185969383144-mpmkgaaaci95cbep3if552h47uovu3df.apps.googleusercontent.com",
 )
-mp_client = MercadoPagoConfig(access_token=os.environ.get("MP_ACCESS_TOKEN"))
+sdk = mercadopago.SDK(os.environ.get("MP_ACCESS_TOKEN"))
 
 def get_conn():
     return libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
@@ -333,18 +333,21 @@ inicializar_db()
 @app.route("/api/crear-preferencia", methods=["POST"])
 def crear_preferencia():
     try:
+        # Leemos la cantidad que envíe el HTML, por defecto 1
+        data = request.json or {}
+        cantidad = int(data.get("cantidad", 1))
+
         preference_data = {
             "items": [
                 {
                     "title": "Artículo de Prueba",
-                    "quantity": 1,
+                    "quantity": cantidad,
                     "unit_price": 1500.0,
                     "currency_id": "ARS"
                 }
             ]
         }
-        preference_client = Preference(mp_client)
-        preference_response = preference_client.create(preference_data)
+        preference_response = sdk.preference().create(preference_data)
         return jsonify({"id": preference_response["response"]["id"]})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
