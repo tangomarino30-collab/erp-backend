@@ -4,3 +4,4 @@ libsql-client
 gunicorn
 google-auth
 requests
+mercadopago
