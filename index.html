@@ -1,83 +1,203 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mi Piloto de Pago</title>
-    <!-- 1. Cargamos el SDK de Mercado Pago -->
-    <script src="https://mercadopago.com"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ERP · Login</title>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,sans-serif;}
+  body{
+    min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(135deg,#0d9488 0%,#14b8a6 50%,#5eead4 100%);
+  }
+  .card{
+    background:#fff;border-radius:16px;padding:32px;width:100%;max-width:380px;
+    box-shadow:0 10px 30px rgba(0,0,0,.2);text-align:center;
+  }
+  h1{font-size:22px;margin-bottom:4px;color:#0d9488;}
+  p.sub{color:#777;font-size:13px;margin-bottom:24px;}
+  #botonGoogle{display:flex;justify-content:center;min-height:44px;}
+  button{
+    width:100%;padding:11px;border:none;border-radius:8px;background:#0d9488;
+    color:#fff;font-size:15px;font-weight:bold;cursor:pointer;margin-top:8px;
+  }
+  button:hover{background:#0b7d73;}
+  button:disabled{background:#aaa;cursor:default;}
+  .msg{font-size:13px;margin-top:16px;min-height:18px;}
+  .msg.error{color:#dc2626;}
+  .msg.ok{color:#16a34a;}
+  #panel{display:none;}
+
+  /* producto */
+  .producto{margin:20px 0;padding:16px;border:1px solid #e5e7eb;border-radius:10px;}
+  .producto h2{font-size:18px;color:#111;margin-bottom:4px;}
+  .precio{font-size:15px;color:#555;margin-bottom:14px;}
+  .cantidad-ctrl{display:flex;align-items:center;justify-content:center;gap:12px;margin-bottom:16px;}
+  .cantidad-ctrl button{
+    width:40px;height:40px;font-size:22px;border-radius:50%;padding:0;margin:0;
+    background:#0d9488;
+  }
+  #numCantidad{font-size:22px;font-weight:bold;min-width:32px;}
+  #totalLinea{font-size:13px;color:#555;margin-bottom:4px;}
+  #btnPagar{background:#009ee3;}  /* azul MP */
+  #btnPagar:hover{background:#007ab8;}
+</style>
 </head>
 <body>
 
-    <div style="border: 1px solid #ccc; padding: 20px; max-width: 300px; text-align: center; border-radius: 8px; margin: 20px auto;">
-        <h2>Artículo de Prueba</h2>
-        <p>Precio Unitario: <strong>$1500.00</strong></p>
-        
-        <!-- Controles de cantidad -->
-        <div style="margin-bottom: 20px;">
-            <button id="btn-menos" style="padding: 5px 15px; font-size: 18px;">-</button>
-            <span id="cantidad-txt" style="font-size: 18px; margin: 0 15px; font-weight: bold;">1</span>
-            <button id="btn-mas" style="padding: 5px 15px; font-size: 18px;">+</button>
-        </div>
+<div class="card" id="login">
+  <h1>ERP</h1>
+  <p class="sub">Ingresá con tu cuenta de Google</p>
+  <div id="botonGoogle"></div>
+  <div id="msg" class="msg"></div>
+</div>
 
-        <!-- Botón de Pago Único -->
-        <button id="btn-pagar" style="background-color: #009ee3; color: white; border: none; padding: 10px 20px; font-size: 16px; border-radius: 5px; cursor: pointer; width: 100%;">
-            Pagar con Mercado Pago
-        </button>
+<div class="card" id="panel">
+  <h1>¡Hola!</h1>
+  <p class="sub" id="panelInfo"></p>
+
+  <div class="producto">
+    <h2>☕ Café</h2>
+    <p class="precio" id="precioUnitario"></p>
+
+    <div class="cantidad-ctrl">
+      <button id="btnMenos">−</button>
+      <span id="numCantidad">1</span>
+      <button id="btnMas">+</button>
     </div>
 
-    <script>
-        // 2. Inicializamos Mercado Pago con tu Public Key de prueba
-        const mp = new Mercadopago("APP_USR-0e7e7f45-ebbd-42a8-aab5-cf85fb927445", { locale: "es-AR" });
+    <p id="totalLinea"></p>
+    <button id="btnPagar">Pagar con Mercado Pago</button>
+  </div>
 
-        let cantidad = 1;
-        const urlBackend = "https://onrender.com";
+  <div id="msgPago" class="msg"></div>
+  <button id="btnLogout">Cerrar sesión</button>
+</div>
 
+<script>
+var API_BASE        = 'https://erp-backend-bsyv.onrender.com'; // <-- reemplazá con tu URL de Render
+var GOOGLE_CLIENT_ID = '185969383144-mpmkgaaaci95cbep3if552h47uovu3df.apps.googleusercontent.com';
 
-        // Manejo del contador visual
-        document.getElementById("btn-mas").addEventListener("click", () => {
-            cantidad++;
-            document.getElementById("cantidad-txt").innerText = cantidad;
-        });
+var PRECIO_UNIT = 500;  // se actualiza si el backend lo informa (por ahora fijo)
+var cantidad    = 1;
 
-        document.getElementById("btn-menos").addEventListener("click", () => {
-            if (cantidad > 1) {
-                cantidad--;
-                document.getElementById("cantidad-txt").innerText = cantidad;
-            }
-        });
+async function api(url, method, body){
+  var opts = {method:method||'GET', headers:{'Content-Type':'application/json'}, credentials:'include'};
+  if(body) opts.body = JSON.stringify(body);
+  var r = await fetch(API_BASE + url, opts);
+  return r.json();
+}
 
-        // 3. Evento para llamar a Render y abrir el checkout en el celular
-        document.getElementById("btn-pagar").addEventListener("click", async () => {
-            try {
-                // Deshabilitamos el botón para evitar doble clic
-                document.getElementById("btn-pagar").innerText = "Procesando...";
-                
-                // Pedimos el ID de la preferencia enviando la cantidad elegida
-                const response = await fetch(urlBackend, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ cantidad: cantidad })
-                });
-                
-                const data = await response.json();
+function mostrarMsg(texto, tipo){
+  var m = document.getElementById('msg');
+  m.textContent = texto;
+  m.className   = 'msg ' + (tipo || '');
+}
 
-                if (data.id) {
-                    // Abrimos Mercado Pago en la misma pestaña (ideal para app celular)
-                    mp.checkout({
-                        preference: { id: data.id },
-                        autoOpen: true
-                    });
-                } else {
-                    alert("Error al generar el pago");
-                    document.getElementById("btn-pagar").innerText = "Pagar con Mercado Pago";
-                }
-            } catch (error) {
-                console.error(error);
-                alert("Error de conexión");
-                document.getElementById("btn-pagar").innerText = "Pagar con Mercado Pago";
-            }
-        });
-    </script>
+function actualizarTotal(){
+  document.getElementById('numCantidad').textContent  = cantidad;
+  document.getElementById('totalLinea').textContent   = 'Total: $' + (PRECIO_UNIT * cantidad).toLocaleString('es-AR');
+}
+
+function mostrarLogueado(usuario, cod){
+  document.getElementById('login').style.display  = 'none';
+  document.getElementById('panel').style.display  = 'block';
+  document.getElementById('panelInfo').textContent = usuario + ' · Código: ' + cod;
+  document.getElementById('precioUnitario').textContent = 'Precio unitario: $' + PRECIO_UNIT.toLocaleString('es-AR');
+  actualizarTotal();
+}
+
+async function onGoogle(respuesta){
+  mostrarMsg('Verificando con Google...');
+  try{
+    var res = await api('/api/google', 'POST', {credential: respuesta.credential});
+    if(res.error){
+      mostrarMsg(res.error, 'error');
+    } else {
+      mostrarMsg('');
+      mostrarLogueado(res.usuario, res.cod_cliente);
+    }
+  }catch(e){
+    mostrarMsg('No se pudo conectar al servidor. Si recién lo abriste, esperá 1 minuto y probá de nuevo.', 'error');
+  }
+}
+
+// Botones + y −
+document.getElementById('btnMas').addEventListener('click', function(){
+  cantidad++;
+  actualizarTotal();
+});
+document.getElementById('btnMenos').addEventListener('click', function(){
+  if(cantidad > 1){ cantidad--; actualizarTotal(); }
+});
+
+// Botón Pagar
+document.getElementById('btnPagar').addEventListener('click', async function(){
+  var btn = this;
+  btn.disabled    = true;
+  btn.textContent = 'Generando enlace...';
+  document.getElementById('msgPago').textContent = '';
+  try{
+    var res = await api('/api/mp/crear_preferencia', 'POST', {cantidad: cantidad});
+    if(res.error){
+      document.getElementById('msgPago').textContent = res.error;
+      document.getElementById('msgPago').className   = 'msg error';
+    } else {
+      // Redirige al checkout de Mercado Pago
+      window.location.href = res.link;
+    }
+  }catch(e){
+    document.getElementById('msgPago').textContent = 'Error al conectar con el servidor.';
+    document.getElementById('msgPago').className   = 'msg error';
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = 'Pagar con Mercado Pago';
+  }
+});
+
+// Logout
+document.getElementById('btnLogout').addEventListener('click', async function(){
+  await api('/api/logout', 'POST');
+  if(window.google) google.accounts.id.disableAutoSelect();
+  document.getElementById('panel').style.display = 'none';
+  document.getElementById('login').style.display = 'block';
+  mostrarMsg('');
+  cantidad = 1;
+});
+
+// Resultado de vuelta desde MP
+window.addEventListener('load', function(){
+  var params = new URLSearchParams(window.location.search);
+  var mp = params.get('mp');
+  if(mp === 'ok'){
+    document.getElementById('msgPago').textContent = '✅ Pago aprobado. ¡Gracias!';
+    document.getElementById('msgPago').className   = 'msg ok';
+  } else if(mp === 'error'){
+    document.getElementById('msgPago').textContent = '❌ El pago no se completó.';
+    document.getElementById('msgPago').className   = 'msg error';
+  } else if(mp === 'pending'){
+    document.getElementById('msgPago').textContent = '⏳ Pago pendiente.';
+    document.getElementById('msgPago').className   = 'msg';
+  }
+});
+
+// Inicializar Google
+window.onload = function(){
+  if(window.google){
+    google.accounts.id.initialize({client_id: GOOGLE_CLIENT_ID, callback: onGoogle});
+    google.accounts.id.renderButton(
+      document.getElementById('botonGoogle'),
+      {theme:'outline', size:'large', text:'signin_with', locale:'es'}
+    );
+  } else {
+    mostrarMsg('No cargó el botón de Google. Recargá la página.', 'error');
+  }
+  api('/api/sesion').then(function(s){
+    if(s.logueado) mostrarLogueado(s.usuario, s.cod_cliente);
+  }).catch(function(){});
+};
+</script>
+
 </body>
 </html>
