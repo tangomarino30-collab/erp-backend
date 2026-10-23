@@ -1,16 +1,16 @@
 """
-ERP Server - Render + Turso (libsql_client) + Login con Google
+ERP Server - Render + Turso (libsql_client) + Login con Google + Mercado Pago Checkout Pro
 """
 
 import os
 import secrets
+import requests as http_requests
 from datetime import datetime
 from flask import Flask, jsonify, request, session
 from flask_cors import CORS
 import libsql_client
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
-import mercadopago
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "erp_secret_key_2024")
@@ -28,7 +28,13 @@ GOOGLE_CLIENT_ID = os.environ.get(
     "GOOGLE_CLIENT_ID",
     "185969383144-mpmkgaaaci95cbep3if552h47uovu3df.apps.googleusercontent.com",
 )
-sdk = mercadopago.SDK(os.environ.get("MP_ACCESS_TOKEN"))
+
+MP_ACCESS_TOKEN = os.environ.get("MP_ACCESS_TOKEN", "")
+FRONTEND_URL    = os.environ.get("FRONTEND_URL", "")
+
+# Producto fijo para el ejemplo (se puede cambiar desde las variables de entorno)
+CAFE_NOMBRE = os.environ.get("CAFE_NOMBRE", "Café")
+CAFE_PRECIO = float(os.environ.get("CAFE_PRECIO", "500"))
 
 def get_conn():
     return libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
@@ -324,33 +330,119 @@ def post_pago():
     finally:
         conn.close()
 
+# ── MERCADO PAGO ──
+
+@app.route("/api/mp/crear_preferencia", methods=["POST"])
+def mp_crear_preferencia():
+    """Crea una preferencia de Checkout Pro y devuelve el link de pago."""
+    cod = cliente_sesion()
+    if not cod:
+        return jsonify({"error": "No autenticado."}), 401
+    if not MP_ACCESS_TOKEN:
+        return jsonify({"error": "MP_ACCESS_TOKEN no configurado en el servidor."}), 500
+
+    data     = request.json or {}
+    cantidad = int(data.get("cantidad", 1))
+    if cantidad < 1:
+        return jsonify({"error": "Cantidad inválida."}), 400
+
+    total = round(CAFE_PRECIO * cantidad, 2)
+
+    body = {
+        "items": [
+            {
+                "title":      CAFE_NOMBRE,
+                "quantity":   cantidad,
+                "unit_price": CAFE_PRECIO,
+                "currency_id": "ARS",
+            }
+        ],
+        "back_urls": {
+            "success": FRONTEND_URL + "?mp=ok",
+            "failure": FRONTEND_URL + "?mp=error",
+            "pending": FRONTEND_URL + "?mp=pending",
+        },
+        "auto_return": "approved",
+        "notification_url": os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/") + "/api/mp/webhook",
+        "external_reference": cod,
+    }
+
+    resp = http_requests.post(
+        "https://api.mercadopago.com/checkout/preferences",
+        headers={
+            "Authorization": f"Bearer {MP_ACCESS_TOKEN}",
+            "Content-Type":  "application/json",
+        },
+        json=body,
+        timeout=15,
+    )
+
+    if resp.status_code not in (200, 201):
+        return jsonify({"error": "Error al crear preferencia MP.", "detalle": resp.text}), 502
+
+    pref = resp.json()
+    # sandbox_init_point para pruebas; init_point para producción
+    link = pref.get("sandbox_init_point") or pref.get("init_point")
+    return jsonify({"ok": True, "link": link, "total": total})
+
+
+@app.route("/api/mp/webhook", methods=["POST"])
+def mp_webhook():
+    """Recibe notificaciones de Mercado Pago y registra el pago en Turso."""
+    topic = request.args.get("topic") or (request.json or {}).get("type")
+    if topic != "payment":
+        return jsonify({"ok": True})
+
+    payment_id = request.args.get("id") or (request.json or {}).get("data", {}).get("id")
+    if not payment_id:
+        return jsonify({"ok": True})
+
+    # Consultar el pago en la API de MP
+    resp = http_requests.get(
+        f"https://api.mercadopago.com/v1/payments/{payment_id}",
+        headers={"Authorization": f"Bearer {MP_ACCESS_TOKEN}"},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        return jsonify({"error": "No se pudo obtener el pago."}), 502
+
+    pago = resp.json()
+    estado      = pago.get("status")          # "approved", "pending", ...
+    monto       = float(pago.get("transaction_amount", 0))
+    cod_cliente = pago.get("external_reference", "")
+
+    if estado != "approved" or not cod_cliente or monto <= 0:
+        return jsonify({"ok": True})
+
+    # Registrar pago aprobado en Turso
+    conn = get_conn()
+    try:
+        fecha = datetime.now().strftime("%d/%m/%Y")
+        rs    = conn.execute("SELECT * FROM clientes WHERE codigo=?", (cod_cliente,))
+        cli   = rs_to_dict_one(rs)
+        if cli:
+            deuda_actual   = float(cli["deuda"])
+            aplicado       = round(min(monto, deuda_actual), 2)
+            deuda_restante = round(deuda_actual - aplicado, 2)
+            conn.execute(
+                "INSERT INTO pagos (fecha, cod_cliente, nombre_cliente, monto_aplicado, deuda_restante) VALUES (?,?,?,?,?)",
+                (fecha, cod_cliente, cli["nombre"], aplicado, deuda_restante),
+            )
+            conn.execute("UPDATE clientes SET deuda=? WHERE codigo=?", (deuda_restante, cod_cliente))
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+    return jsonify({"ok": True})
+
+
 # ──────────────────────────────────────────────
 # ARRANQUE
 # ──────────────────────────────────────────────
 
 print("\n[ERP] Conectando a Turso...")
 inicializar_db()
-@app.route("/api/crear-preferencia", methods=["POST"])
-def crear_preferencia():
-    try:
-        # Leemos la cantidad que envíe el HTML, por defecto 1
-        data = request.json or {}
-        cantidad = int(data.get("cantidad", 1))
-
-        preference_data = {
-            "items": [
-                {
-                    "title": "Artículo de Prueba",
-                    "quantity": cantidad,
-                    "unit_price": 1500.0,
-                    "currency_id": "ARS"
-                }
-            ]
-        }
-        preference_response = sdk.preference().create(preference_data)
-        return jsonify({"id": preference_response["response"]["id"]})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT, debug=False)
